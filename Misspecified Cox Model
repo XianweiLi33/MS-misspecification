@@ -1,0 +1,755 @@
+library(nleqslv)
+library(expm)
+protect_val <- 1e-9
+A <- 1
+# rate function
+q_fn <- function(theta, x){
+  # which set of par
+  par1 = theta$par1
+  par2 = theta$par2
+  par3 = theta$par3
+  
+  beta01 <- par1[-1]
+  beta02 <- par2[-1]
+  beta12 <- par3[-1]
+  
+  # baseline
+  l01 = par1[1]
+  l02 = par2[1]
+  l12 = par3[1]
+  
+  q <- rbind(c(-l01*as.vector(exp(x%*%beta01)) - l02*as.vector(exp(x%*%beta02)), l01*as.vector(exp(x%*%beta01)), l02*as.vector(exp(x%*%beta02))),
+             c(0,-l12*as.vector(exp(x%*%beta12)), l12*as.vector(exp(x%*%beta12))),
+             c(0, 0, 0))
+  return(q)
+}
+
+
+p_fn <- function(qmat, start, end){
+  l1 = -qmat[1,1]
+  l2 = -qmat[2,2]
+  if (start  ==  end){
+    p = diag(3)
+  }else{
+    p = expm(qmat*(end - start))
+  }
+  return(p)
+}
+
+solve_for_baseline_2cov <- function(x, p_path1, p_A, r){ # P_A = P(T < A)  = P(Z(A) = 2)
+  l01 <- x[1]; l02 <- x[2]; l12 <- r*l02
+  par1 = c(l01, beta01)
+  par2 = c(l02, beta02)
+  par3 = c(l12, beta12)
+  # theta list
+  (theta <- list(par1 = par1, par2 = par2, par3 = par3))
+  
+  val1 <- p11*(l01*exp(beta01%*%c(1,1))/(l01*exp(beta01%*%c(1,1)) + l02*exp(beta02%*%c(1,1)))) +
+    p10*(l01*exp(beta01%*%c(1,0))/(l01*exp(beta01%*%c(1,0)) + l02*exp(beta02%*%c(1,0)))) +
+    p01*(l01*exp(beta01%*%c(0,1))/(l01*exp(beta01%*%c(0,1)) + l02*exp(beta02%*%c(0,1)))) +
+    p00*(l01*exp(beta01%*%c(0,0))/(l01*exp(beta01%*%c(0,0)) + l02*exp(beta02%*%c(0,0))))
+  
+  qmat11 <- q_fn(theta, x = c(1, 1))
+  qmat10 <- q_fn(theta, x = c(1, 0))
+  qmat01 <- q_fn(theta, x = c(0, 1))
+  qmat00 <- q_fn(theta, x = c(0, 0))
+  
+  val2 <-  p11*p_fn(qmat11, 0, 1)[1, 3] + 
+    p10*p_fn(qmat10, 0, 1)[1, 3] + 
+    p01*p_fn(qmat01, 0, 1)[1, 3] + 
+    p00*p_fn(qmat00, 0, 1)[1, 3]
+  
+  return(c(val1 - p_path1, val2 - p_A))
+}
+
+f.cox.rc <- Vectorize(function(s, beta, theta){
+  par1 = theta$par1; par2 = theta$par2; par3 = theta$par3
+  beta01 <- par1[-1]; beta02 <- par2[-1]; beta12 <- par3[-1]
+  l01 = par1[1]; l02 = par2[1]; l12 = par3[1]
+  qmat11 <- q_fn(theta, x = c(1, 1))
+  qmat10 <- q_fn(theta, x = c(1, 0))
+  qmat01 <- q_fn(theta, x = c(0, 1))
+  qmat00 <- q_fn(theta, x = c(0, 0))
+  
+  r0_s <- p11*(l02*exp(beta02%*%c(1, 1))*p_fn(qmat11, 0, s)[1,1] + l12*exp(beta12%*%c(1, 1))*p_fn(qmat11, 0, s)[1,2]) +
+    p10*(l02*exp(beta02%*%c(1, 0))*p_fn(qmat10, 0, s)[1,1] + l12*exp(beta12%*%c(1, 0))*p_fn(qmat10, 0, s)[1,2]) +
+    p01*(l02*exp(beta02%*%c(0, 1))*p_fn(qmat01, 0, s)[1,1] + l12*exp(beta12%*%c(0, 1))*p_fn(qmat01, 0, s)[1,2]) +
+    p00*(l02*exp(beta02%*%c(0, 0))*p_fn(qmat00, 0, s)[1,1] + l12*exp(beta12%*%c(0, 0))*p_fn(qmat00, 0, s)[1,2])
+  
+  r1_s <- p11*(l02*exp(beta02%*%c(1, 1))*p_fn(qmat11, 0, s)[1,1] + l12*exp(beta12%*%c(1, 1))*p_fn(qmat11, 0, s)[1,2]) +
+    p10*(l02*exp(beta02%*%c(1, 0))*p_fn(qmat10, 0, s)[1,1] + l12*exp(beta12%*%c(1, 0))*p_fn(qmat10, 0, s)[1,2])
+  
+  r0_s_psi <-  p11*exp(beta)*(1 - p_fn(qmat11, 0, s)[1,3]) +
+    p10*exp(beta)*(1 - p_fn(qmat10, 0, s)[1,3]) +
+    p01*(1 - p_fn(qmat01, 0, s)[1,3]) +
+    p00*(1 - p_fn(qmat00, 0, s)[1,3])
+  
+  r1_s_psi <- p11*exp(beta)*(1 - p_fn(qmat11, 0, s)[1,3]) +
+    p10*exp(beta)*(1 - p_fn(qmat10, 0, s)[1,3])
+  
+  val <- r1_s - r0_s *r1_s_psi/(r0_s_psi + protect_val)
+  # val <- val*pc(s)
+  return(val)
+}, vectorize.args = "s")
+
+# integral (x means 'beta')
+F_fn_beta_cox <- function(x, theta){
+  integrate(f.cox.rc, lower = 0, upper = 1, beta = x, theta = theta)$value
+}
+# ============== start plotting: cox_A =========================
+# panel a
+r.seq <- seq(0.5, 2, 0.1)
+p11 = p10 = p00 = p01 = 0.25
+pdf(paste0("cox_A", 1, ".pdf"), 5, 4)
+par(mar = c(4, 5, 1, 1), mfrow = c(1, 1))  # More space on the left
+plot(c(0.5, 2), c(0.25, 0.5), type = "n",
+     ylab = expression("Limiting Values " * psi^"*"),
+     xlab = expression(r == lambda[12] / lambda["02"]))
+for(setting in 1:3){
+if(setting == 1){
+  beta01 <- c(log(1), 0)
+  beta02 <- c(log(1.5), 0)
+  beta12 <- c(log(1.5), 0)
+} else if(setting == 2){
+  beta01 <- c(log(1.5), 0)
+  beta02 <- c(log(1.5), 0)
+  beta12 <- c(log(1.5), 0) 
+}else if(setting == 3){
+  beta01 <- c(log(0.5), 0)
+  beta02 <- c(log(1.5), 0)
+  beta12 <- c(log(1.5), 0) 
+}
+res.cox <- c()
+for(i in 1:length(r.seq)){
+  (baselines <- nleqslv(
+    x = c(0.5, 1), # Initial guess
+    fn = solve_for_baseline_2cov, # Function to solve
+    p_path1 = 0.7, # Additional arguments
+    p_A = 0.8,
+    r = r.seq[i]
+  )$x)
+  l01 <- baselines[1]
+  l02 <- baselines[2]
+  l12 <- r.seq[i]*l02
+  par1 = c(l01, beta01)
+  par2 = c(l02, beta02)
+  par3 = c(l12, beta12)
+  # theta list
+  (theta.t <- list(par1 = par1, par2 = par2, par3 = par3))
+  (beta_star <- nleqslv(x = log(1), fn = F_fn_beta_cox, theta = theta.t)$x)
+  res.cox[i] <- beta_star
+}
+lines(r.seq, res.cox, "l", ylab = "Limiting Value", col = setting, xlab = expression(r = lambda[12]/lambda[02]))
+}
+abline(v = 1, lty = 2)
+abline(h = log(1.5), lty = 2, col = 2)
+legend("bottomright", bty = "n", legend = c("Setting 1", "Setting 2", "Setting 3"),
+       lty = 1, col = 1:3)
+dev.off()
+
+# panel b
+pdf(paste0("cox_A", 2, ".pdf"), 5, 4)
+par(mar = c(5, 5, 1, 1), mfrow = c(1, 1))  # More space on the left
+plot(c(0.5, 2), c(-0.7, 0.7), type = "n",
+     ylab = expression("Limiting Values " * psi^"*"),
+     xlab = expression(r == lambda[12] / lambda["02"]))
+for(setting in 4:6){
+if(setting == 4){
+    beta01 <- c(log(2), 0)
+    beta02 <- c(log(0.5), 0)
+    beta12 <- c(log(2), 0) 
+  }else if(setting == 5){
+    beta01 <- c(log(0.5), 0)
+    beta02 <- c(log(1), 0)
+    beta12 <- c(log(2), 0) 
+  }else if(setting == 6){
+    beta01 <- c(log(0.5), 0)
+    beta02 <- c(log(2), 0)
+    beta12 <- c(log(0.5), 0) 
+  }
+  
+  r.seq <- seq(0.5, 2, 0.1)
+  res.cox <- c()
+  for(i in 1:length(r.seq)){
+    (baselines <- nleqslv(
+      x = c(0.5, 1), # Initial guess
+      fn = solve_for_baseline_2cov, # Function to solve
+      p_path1 = 0.7, # Additional arguments
+      p_A = 0.8,
+      r = r.seq[i]
+    )$x)
+    l01 <- baselines[1]
+    l02 <- baselines[2]
+    l12 <- r.seq[i]*l02
+    par1 = c(l01, beta01)
+    par2 = c(l02, beta02)
+    par3 = c(l12, beta12)
+    # theta list
+    (theta.t <- list(par1 = par1, par2 = par2, par3 = par3))
+    (beta_star <- nleqslv(x = log(1), fn = F_fn_beta_cox, theta = theta.t)$x)
+    res.cox[i] <- beta_star
+  }
+  lines(r.seq, res.cox, "l", ylab = "Limiting Value", col = setting - 3, xlab = expression(r = lambda[12]/lambda[02]))
+}
+abline(v = 1, lty = 2)
+abline(h = log(0.5), lty = 2, col = 2)
+abline(h = log(2), lty = 2, col = 2)
+abline(h = log(1), lty = 2, col = 2)
+legend("bottomright", bty = "n", legend = c("Setting 4", "Setting 5", "Setting 6"),
+       lty = 1, col = 1:3)
+dev.off()
+
+# settings series B
+for(panel in 1:2){
+pdf(paste0("cox_B", panel, ".pdf"), 5, 4)
+  par(mar = c(5, 5, 1, 1), mfrow = c(1, 1))  # More space on the left
+  if(panel == 1){
+beta02 <- beta12 <- c(log(2), 0) # panel a
+plot(c(log(0.25), log(4)), c(0, 1.5), type = "n",
+     ylab = expression("Limiting Values " * psi^"*"),
+     xlab = expression(beta["01"]))
+  }else if(panel == 2){
+    beta02 <- beta12 <- c(log(0.5), 0) # panel b
+plot(c(log(0.25), log(4)), c(-1.5, 0), type = "n",
+         ylab = expression("Limiting Values " * psi^"*"),
+         xlab = expression(beta["01"]))
+  }
+
+for(setting in 1:3){
+  if(setting == 1){
+    r = 1
+  }else if(setting == 2){
+    r = 2
+  }else if(setting == 3){
+    r = 4
+  }
+  beta01.seq <- log(seq(0.25, 4, 0.1))
+  res.cox <- c()
+  for(i in 1:length(beta01.seq)){
+    beta01 <- c(beta01.seq[i], 0)
+    (baselines <- nleqslv(
+      x = c(0.5, 1), # Initial guess
+      fn = solve_for_baseline_2cov, # Function to solve
+      p_path1 = 0.7, # Additional arguments
+      p_A = 0.8,
+      r = r
+    )$x)
+    l01 <- baselines[1]
+    l02 <- baselines[2]
+    l12 <- r*l02
+    par1 = c(l01, beta01)
+    par2 = c(l02, beta02)
+    par3 = c(l12, beta12)
+    # theta list
+    (theta.t <- list(par1 = par1, par2 = par2, par3 = par3))
+    (beta_star <- nleqslv(x = log(1), fn = F_fn_beta_cox, theta = theta.t)$x)
+    res.cox[i] <- beta_star
+  }
+  lines(beta01.seq, res.cox, "l", ylab = "Limiting Value", col = setting, lwd = 1)
+}
+abline(h = beta02[1], lty = 2, col = 1)
+abline(v = 0, lty = 2, col = 1)
+legend("bottomright", bty = "n", legend = c("r = 1", "r = 2", "r = 4"), lty = 1, col = 1:3)
+dev.off()
+}
+
+# === settings series C ====
+# (a)
+pdf(paste0("cox_C", 1, ".pdf"), 5, 4)
+par(mar = c(5, 5, 1, 1), mfrow = c(1, 1))  # More space on the left
+plot(c(0, 2), c(-1.5, 0), type = "n",
+     ylab = expression("Limiting Values " * psi^"*"),
+     xlab = expression(d == beta[12]/beta["02"]))
+d.seq <- seq(0, 2, 0.1)
+for(setting in 1:3){
+  if(setting == 1){
+    r = 1
+  }else if(setting == 2){
+    r = 2
+  }else if(setting == 3){
+    r = 4
+  }
+  res.cox <- c()
+  for(i in 1:length(d.seq)){
+    d <- d.seq[i]
+    beta01 <- c(log(1), 0)
+    beta02 <- c(log(0.5), 0)
+    beta12 <- d*beta02 
+    (baselines <- nleqslv(
+      x = c(0.5, 1), # Initial guess
+      fn = solve_for_baseline_2cov, # Function to solve
+      p_path1 = 0.7, # Additional arguments
+      p_A = 0.8,
+      r = r
+    )$x)
+    l01 <- baselines[1]
+    l02 <- baselines[2]
+    l12 <- r*l02
+    par1 = c(l01, beta01)
+    par2 = c(l02, beta02)
+    par3 = c(l12, beta12)
+    # theta list
+    (theta.t <- list(par1 = par1, par2 = par2, par3 = par3))
+    (beta_star <- nleqslv(x = log(1), fn = F_fn_beta_cox, theta = theta.t)$x)
+    res.cox[i] <- beta_star
+  }
+  lines(d.seq, res.cox, "l", ylab = "Limiting Value", col = setting, lwd = 1)
+}
+
+abline(h = log(0.5), lty = 2, col = 1)
+abline(v = 1, lty = 2, col = 1)
+legend("bottomright", bty = "n", legend = c("r = 1", "r = 2", "r = 4"), lty = 1, col = 1:3)
+dev.off()
+
+# (b)
+pdf(paste0("cox_C", 2, ".pdf"), 5, 4)
+par(mar = c(5, 5, 1, 1), mfrow = c(1, 1))  # More space on the left
+plot(c(0, 2), c(0, 1.5), type = "n",
+     ylab = expression("Limiting Values " * psi^"*"),
+     xlab = expression(d == beta[12]/beta["02"]))
+d.seq <- seq(0, 2, 0.1)
+for(setting in 1:3){
+  if(setting == 1){
+   r = 1
+  }else if(setting == 2){
+   r = 2
+  }else if(setting == 3){
+   r = 4
+  }
+  res.cox <- c()
+  for(i in 1:length(d.seq)){
+    d <- d.seq[i]
+    beta01 <- c(log(1), 0)
+    beta02 <- c(log(2), 0)
+    beta12 <- d*beta02 
+    (baselines <- nleqslv(
+      x = c(0.5, 1), # Initial guess
+      fn = solve_for_baseline_2cov, # Function to solve
+      p_path1 = 0.7, # Additional arguments
+      p_A = 0.8,
+      r = r
+    )$x)
+    l01 <- baselines[1]
+    l02 <- baselines[2]
+    l12 <- r*l02
+    par1 = c(l01, beta01)
+    par2 = c(l02, beta02)
+    par3 = c(l12, beta12)
+    # theta list
+    (theta.t <- list(par1 = par1, par2 = par2, par3 = par3))
+    (beta_star <- nleqslv(x = log(1), fn = F_fn_beta_cox, theta = theta.t)$x)
+    res.cox[i] <- beta_star
+  }
+  lines(d.seq, res.cox, "l", ylab = "Limiting Value", col = setting, lwd = 1)
+}
+
+abline(h = log(2), lty = 2, col = 1)
+abline(v = 1, lty = 2, col = 1)
+legend("bottomright", bty = "n", legend = c("r = 1", "r = 2", "r = 4"), lty = 1, col = 1:3)
+dev.off()
+
+
+# ====== omitting covariate ===========
+# source the code for 3-state omitting :)
+source("omitting_3state_functions_July7.R")
+# set OR
+OR.seq <- c(0.5, 1, 2)
+for(setting in 1:3){
+OR <- OR.seq[setting]
+pdf(paste0("omit_A", setting, ".pdf"), width = 4.97, height = 4.97)
+# OR <- 0.5 # change this to 0.5, 1, or 2
+p00 = p01 = p10 = p11 = 0.25
+p11 <- (0.5*sqrt(OR))/(1 + sqrt(OR))
+p10 <- p01 <- 0.5 - p11
+p00 <- 0.5 - p10
+
+pA = 0.8
+pB = 0.8
+f <- function(p11) {
+  p10 <- pA - p11
+  p01 <- pB - p11
+  p00 <- 1 - p11 - p10 - p01
+  OR_calc <- (p11 * p00) / (p10 * p01)
+  return(OR_calc - OR)
+}
+sol <- uniroot(f, interval = c(0, min(pA, pB)))$root
+p11 <- sol
+p10 <- pA - p11
+p01 <- pB - p11
+p00 <- 1 - p11 - p10 - p01
+p00 = p00; p01 = p01; p10 = p10; p11 = p11
+
+par(mar = c(5, 5, 4, 2), mfrow = c(1, 1))  # More space on the left
+beta12.x2.seq <- log(seq(0.25, 4, 0.1))
+plot(range(beta12.x2.seq), c(0.25, 0.5), type = "n",
+     ylab = expression("Limiting Values "),
+     xlab = expression(Common~effect~of~omitted~X[2]))
+
+beta12.mean <- beta12_star <- rep(NA, length(beta12.x2.seq))
+res12 <- res01 <- res02 <- res.cox <- rep(NA, length(beta12.x2.seq))
+for(i in 1:length(beta12.x2.seq)){
+  beta01 <- c(log(1.5), beta12.x2.seq[i])
+  beta02 <- c(log(1.5), beta12.x2.seq[i])
+  beta12 <- c(log(1.5), beta12.x2.seq[i])
+  r = 1
+  (baselines <- nleqslv(
+    x = c(0.5, 1), # Initial guess
+    fn = solve_for_baseline_2cov, # Function to solve
+    p_path1 = 0.7, # Additional arguments
+    p_A = 0.8,
+    r = r
+  )$x)
+  l01 <- baselines[1]
+  l02 <- baselines[2]
+  l12 <- r*l02
+  par1 = c(l01, beta01)
+  par2 = c(l02, beta02)
+  par3 = c(l12, beta12)
+  # theta list
+  (theta.t <- list(par1 = par1, par2 = par2, par3 = par3))
+  (res12[i] <- nleqslv(x = log(1.2), fn = F_fn_beta12, theta = theta.t)$x)
+  (res01[i] <- nleqslv(x = log(1.2), fn = F_fn_beta01, theta = theta.t)$x)
+  (res02[i] <- nleqslv(x = log(1.2), fn = F_fn_beta02, theta = theta.t)$x)
+  res.cox[i] <- nleqslv(x = log(1.2), fn = F_fn_beta_cox, theta = theta.t)$x
+}
+
+lines(beta12.x2.seq, res01, "l", col = 1)
+lines(beta12.x2.seq, res02, "l", col = 1) # 0-1 overlaps with 0-2
+lines(beta12.x2.seq, res12, "l", col = 2) # 1-2 overlaps with 02
+lines(beta12.x2.seq, res.cox, "l", col = 3)
+
+legend("bottomright",
+       legend = c("0-1 or 0-2 transitions",
+                  "1-2 transitions",
+                 "Cox"),
+       col = 1:3,
+       lty = 1,
+       bty = "n")
+
+abline(v = 0, lty = 2)
+abline(h = log(1.5), lty = 2, col = 2)
+dev.off()
+}
+
+# ==== another layout ===
+# Sequences and settings
+beta12.x2.seq <- log(seq(0.25, 4, 0.1))
+OR.values <- c(0.5, 1, 2)
+colors <- c("red", "black", "blue")
+
+# Initialize results
+res01.mat <- matrix(NA, nrow = length(beta12.x2.seq), ncol = length(OR.values))
+res02.mat <- matrix(NA, nrow = length(beta12.x2.seq), ncol = length(OR.values))
+res12.mat <- matrix(NA, nrow = length(beta12.x2.seq), ncol = length(OR.values))
+rescox.mat <- matrix(NA, nrow = length(beta12.x2.seq), ncol = length(OR.values))
+
+# Loop over OR values
+for (j in seq_along(OR.values)) {
+  OR <- OR.values[j]
+  
+  # Define joint probabilities
+  pA <- 0.5
+  pB <- 0.5
+  f <- function(p11) {
+    p10 <- pA - p11
+    p01 <- pB - p11
+    p00 <- 1 - p11 - p10 - p01
+    OR_calc <- (p11 * p00) / (p10 * p01)
+    return(OR_calc - OR)
+  }
+  sol <- uniroot(f, interval = c(0, min(pA, pB)))$root
+  p11 <- sol
+  p10 <- pA - p11
+  p01 <- pB - p11
+  p00 <- 1 - p11 - p10 - p01
+  
+  # Loop over effect of omitted X2
+  for (i in seq_along(beta12.x2.seq)) {
+    beta01 <- c(log(1.5), beta12.x2.seq[i])
+    beta02 <- c(log(1.5), beta12.x2.seq[i])
+    beta12 <- c(log(1.5), beta12.x2.seq[i])
+    r <- 1
+    
+    baselines <- nleqslv(
+      x = c(0.5, 1),
+      fn = solve_for_baseline_2cov,
+      p_path1 = 0.7,
+      p_A = 0.8,
+      r = r
+    )$x
+    
+    l01 <- baselines[1]
+    l02 <- baselines[2]
+    l12 <- r * l02
+    par1 <- c(l01, beta01)
+    par2 <- c(l02, beta02)
+    par3 <- c(l12, beta12)
+    theta.t <- list(par1 = par1, par2 = par2, par3 = par3)
+    
+    res01.mat[i, j] <- nleqslv(x = log(1.2), fn = F_fn_beta01, theta = theta.t)$x
+    res02.mat[i, j] <- nleqslv(x = log(1.2), fn = F_fn_beta02, theta = theta.t)$x
+    res12.mat[i, j] <- nleqslv(x = log(1.2), fn = F_fn_beta12, theta = theta.t)$x
+    rescox.mat[i, j] <- nleqslv(x = log(1.2), fn = F_fn_beta_cox, theta = theta.t)$x
+  }
+}
+
+# Plotting
+par(mfrow = c(1, 1), mar = c(5, 5, 4, 2))
+# Expression-based y-axis labels
+labels <- list(
+  expression("Limiting value " * beta["01"]^"*"),
+  expression("Limiting value " * beta["02"]^"*"),
+  expression("Limiting value " * beta["12"]^"*"),
+  expression("Limiting value " * psi^"*")
+)
+
+res_list <- list(res01.mat, res02.mat, res12.mat, rescox.mat)
+
+for (k in 1:4) {
+  mat <- res_list[[k]]
+  plot(range(beta12.x2.seq), range(mat, na.rm = TRUE), type = "n",
+       xlab = expression(Common~effect~of~omitted~X[2]),
+       ylab = labels[[k]])
+  for (j in 1:ncol(mat)) {
+    lines(beta12.x2.seq, mat[, j], col = colors[j], lwd = 1)
+  }
+  abline(v = 0, lty = 2)
+  abline(h = log(1.5), lty = 2)
+  legend("bottomright", legend = paste("OR =", OR.values), col = colors, lty = 1, bty = "n")
+}
+
+source("omitting_3state_functions_July7.R")
+p11 = p10 = p00 = p01 = 0.25
+par(mar = c(5, 5, 4, 2), mfrow = c(1, 1))  # More space on the left
+t.seq <- seq(0, 2, 0.1)
+for(setting in 1:6){
+  if(setting == 1){
+    beta01 <- c(log(1), 0)
+    beta02 <- c(log(1.5), 0)
+    beta12 <- c(log(1.5), 0)
+  } else if(setting == 2){
+    beta01 <- c(log(1.5), 0)
+    beta02 <- c(log(1.5), 0)
+    beta12 <- c(log(1.5), 0) 
+  }else if(setting == 3){
+    beta01 <- c(log(0.5), 0)
+    beta02 <- c(log(1.5), 0)
+    beta12 <- c(log(1.5), 0) 
+  }else if(setting == 4){
+    beta01 <- c(log(2), 0)
+    beta02 <- c(log(0.5), 0)
+    beta12 <- c(log(2), 0) 
+  }else if(setting == 5){
+    beta01 <- c(log(0.5), 0)
+    beta02 <- c(log(1), 0)
+    beta12 <- c(log(2), 0) 
+  }else if(setting == 6){
+    beta01 <- c(log(0.5), 0)
+    beta02 <- c(log(2), 0)
+    beta12 <- c(log(0.5), 0) 
+  }
+  # r = 2, not changing
+  r = 2
+  res.cox <- c()
+  (baselines <- nleqslv(
+      x = c(0.5, 1), # Initial guess
+      fn = solve_for_baseline_2cov, # Function to solve
+      p_path1 = 0.7, # Additional arguments
+      p_A = 0.8,
+      r = r
+    )$x)
+    l01 <- baselines[1]
+    l02 <- baselines[2]
+    l12 <- r*l02
+    par1 = c(l01, beta01)
+    par2 = c(l02, beta02)
+    par3 = c(l12, beta12)
+    # theta list
+    (theta.t <- list(par1 = par1, par2 = par2, par3 = par3))
+    (beta_star <- nleqslv(x = log(1), fn = F_fn_beta_cox, theta = theta.t)$x)
+    # Open PDF device
+    pdf(paste0("cox_st_", setting, ".pdf"), width = 4.97, height = 4.97)
+    
+    par(mar = c(5, 5, 4, 2))
+    plot(t.seq, coxph_st(t.seq, x.val = 1, beta_star, theta.t), type = "l", 
+         ylab = expression(S^"*"~(t)), xlab = "t", lty = 1)
+    lines(t.seq, coxph_st(t.seq, x.val = 0, beta_star, theta.t), lty = 2)
+    lines(t.seq, S_t(t.seq, x = c(1, 1), theta.t), col = 2, lty = 1)
+    lines(t.seq, S_t(t.seq, x = c(0, 0), theta.t), col = 2, lty = 2)
+    
+    legend("topright", lty = c(1, 2, 1, 2), col = c(1, 1, 2, 2), bty = "n",
+           legend = c("Cox - X1 = 1", "Cox - X1 = 0", "3state - X1 = 1", "3state - X1 = 0"))
+    
+    dev.off()  # Close the PDF device
+}
+
+
+# == plot BS(t) =====
+source("omitting_3state_functions_July7.R")
+t.seq <- seq(0.01, 2, 0.05)
+for(setting in 1:6){
+  if(setting == 1){
+    beta01 <- c(log(1), 0)
+    beta02 <- c(log(1.5), 0)
+    beta12 <- c(log(1.5), 0)
+  } else if(setting == 2){
+    beta01 <- c(log(1.5), 0)
+    beta02 <- c(log(1.5), 0)
+    beta12 <- c(log(1.5), 0) 
+  }else if(setting == 3){
+    beta01 <- c(log(0.5), 0)
+    beta02 <- c(log(1.5), 0)
+    beta12 <- c(log(1.5), 0) 
+  }else if(setting == 4){
+    beta01 <- c(log(2), 0)
+    beta02 <- c(log(0.5), 0)
+    beta12 <- c(log(2), 0) 
+  }else if(setting == 5){
+    beta01 <- c(log(0.5), 0)
+    beta02 <- c(log(1), 0)
+    beta12 <- c(log(2), 0) 
+  }else if(setting == 6){
+    beta01 <- c(log(0.5), 0)
+    beta02 <- c(log(2), 0)
+    beta12 <- c(log(0.5), 0) 
+  }
+  # r = 2, not changing
+  r = 2
+  res.cox <- c()
+  (baselines <- nleqslv(
+    x = c(0.5, 1), # Initial guess
+    fn = solve_for_baseline_2cov, # Function to solve
+    p_path1 = 0.7, # Additional arguments
+    p_A = 0.8,
+    r = r
+    )$x)
+  l01 <- baselines[1]
+  l02 <- baselines[2]
+  l12 <- r*l02
+  par1 = c(l01, beta01)
+  par2 = c(l02, beta02)
+  par3 = c(l12, beta12)
+  # theta list
+  (theta.t <- list(par1 = par1, par2 = par2, par3 = par3))
+  (beta_star <- nleqslv(x = log(1), fn = F_fn_beta_cox, theta = theta.t)$x)
+  # Open PDF device
+  pdf(paste0("cox_bs_", setting, ".pdf"), width = 4.97, height = 4.97)
+  
+  par(mar = c(5, 5, 4, 2))
+  plot(t.seq, bs_insep(t.seq, theta.t), type = "l", xlab = "Time", ylab = expression(BS(t)), ylim = c(0, 0.25), col = 1, lty = 1)
+  lines(t.seq, bs_cox(t.seq, beta_star, theta.t), col = 2, lty = 1)
+  legend("bottomright", col = 1:2, legend = c("3state", "Cox"), lty = 1, bty = "n")
+  dev.off()  # Close the PDF device
+}
+
+# ======= five covariates =========
+source("5cov.R")
+# generate Cox model
+# t.seq <- seq(0.01, 1, length.out = 10)
+df <- expand.grid(x1 = c(0, 1), x2 = c(0, 1),x3 = c(0, 1),x4 = c(0, 1), x5 = c(0, 1))
+df$prob <- 1/32
+for(setting in 1:3){
+  if(setting == 1){
+    # setting 1
+    beta01 = beta02 = beta12 = rep(log(1.2), 5)
+  }else if(setting == 2){
+    # setting 2
+    beta01 = c(log(1.5), log(1.5), log(1.2), log(1.2),  log(1.2))
+    beta02 = c(log(1.2), log(1.2), log(1.5), log(1.5),log(1.5))
+    beta12 = c(log(1.1), log(1.1), log(1.1), log(1.1), log(1.1))
+  }else if (setting == 3){
+    # Setting M-3
+    beta01 <- c(log(2), log(0.5), log(0.5), log(0.5), log(0.5))
+    beta02 <- c(log(0.5), 0, 0, log(2), log(2))
+    beta12 <- c(log(2), log(2), log(2), log(0.5), log(0.5))
+  }
+  r = 2
+  (baselines <- nleqslv(
+    x = c(0.5, 1), # Initial guess
+    fn = solve_for_baseline_5cov, # Function to solve
+    p_path1 = 0.7, # Additional arguments
+    p_A = 0.8,
+    r = r
+  )$x)
+  l01 <- baselines[1]
+  l02 <- baselines[2]
+  l12 <- r*l02
+  
+  par1 = c(l01, beta01)
+  par2 = c(l02, beta02)
+  par3 = c(l12, beta12)
+  # theta list
+  (theta.t <- list(par1 = par1, par2 = par2, par3 = par3))
+  (beta_star <- nleqslv(x = rep(0, 5), fn = F_fn_beta_cox_5cov, theta = theta.t)$x)
+  # Open PDF device
+  pdf(paste0("cox_bs_5cov", setting, ".pdf"), width = 4.97, height = 4.97)
+  par(mar = c(5, 5, 4, 2))
+  plot(t.seq, bs_insep.5cov(t.seq, theta.t), type = "l", xlab = "Time", ylab = expression(BS(t)), ylim = c(0, 0.25), col = 1, lty = 1)
+  lines(t.seq, bs_cox_5cov(t.seq, beta_star, theta.t), col = 2, lty = 1)
+  legend("bottomright", col = 1:2, legend = c("3state", "Cox"), lty = 1, bty = "n")
+  dev.off()  # Close the PDF device
+}
+
+
+# ===== omitting, BS(t)=======
+source("omitting_3state_functions_July7.R")
+# Sequences and settings
+beta12.x2 <- log(0.25)
+OR.values <- c(0.5, 1, 2)
+colors <- c("red", "black", "blue")
+# Loop over OR values
+for (j in seq_along(OR.values)) {
+  setting = j
+  OR <- OR.values[j]
+  
+  # Define joint probabilities
+  pA <- 0.5
+  pB <- 0.5
+  f <- function(p11) {
+    p10 <- pA - p11
+    p01 <- pB - p11
+    p00 <- 1 - p11 - p10 - p01
+    OR_calc <- (p11 * p00) / (p10 * p01)
+    return(OR_calc - OR)
+  }
+  
+  sol <- uniroot(f, interval = c(0, min(pA, pB)))$root
+  p11 <- sol
+  p10 <- pA - p11
+  p01 <- pB - p11
+  p00 <- 1 - p11 - p10 - p01
+  
+    beta01 <- c(log(1.5), beta12.x2)
+    beta02 <- c(log(1.5), beta12.x2)
+    beta12 <- c(log(1.5), beta12.x2)
+    r <- 1
+    baselines <- nleqslv(
+      x = c(0.5, 1),
+      fn = solve_for_baseline_2cov,
+      p_path1 = 0.7,
+      p_A = 0.8,
+      r = r
+    )$x
+    
+    l01 <- baselines[1]
+    l02 <- baselines[2]
+    l12 <- r * l02
+    par1 <- c(l01, beta01)
+    par2 <- c(l02, beta02)
+    par3 <- c(l12, beta12)
+    theta.t <- list(par1 = par1, par2 = par2, par3 = par3)
+    
+    beta_star_01 <- nleqslv(x = log(1.2), fn = F_fn_beta01, theta = theta.t)$x
+    beta_star_02 <- nleqslv(x = log(1.2), fn = F_fn_beta02, theta = theta.t)$x
+    beta_star_12 <- nleqslv(x = log(1.2), fn = F_fn_beta12, theta = theta.t)$x
+    beta_star_cox <- nleqslv(x = log(1.2), fn = F_fn_beta_cox, theta = theta.t)$x
+    # Open PDF device
+    pdf(paste0("omit_bs_", setting, ".pdf"), width = 4.97, height = 4.97)
+    par(mar = c(5, 5, 4, 2))
+    plot(t.seq, bs_insep(t.seq, theta.t), type = "l", xlab = "Time", ylab = expression(BS(t)), ylim = c(0, 0.25), col = 1, lty = 3, lwd = 2)
+    lines(t.seq, bs_markov(t.seq, theta.t, beta_star_01, beta_star_02, beta_star_12), col = 2, lty = 1, lwd = 2)
+    lines(t.seq, bs_cox(t.seq, beta_star_cox, theta.t), col = 3, lty = 2, lwd = 2)
+    legend("bottomright", col = 1:3, legend = c("True", "3-state omitting", "Cox omitting"), lty = c(3, 1, 2), bty = "n")
+    dev.off()  # Close the PDF device
+}
+
