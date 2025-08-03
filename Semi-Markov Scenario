@@ -1,0 +1,588 @@
+# this include functions + plotting functions for semi Markov topic
+prob_state <- function(t, x.val, l01, l02, l12, kappa12){ 
+  p0 <- exp(-(l01*exp(x.val%*%beta01) + l02*exp(x.val%*%beta02))* t)
+  
+  p1 <- integrate(f = Vectorize(function(s1, x.val, l01, l02, l12, kappa12, t){
+    l01*exp(x.val%*%beta01) * exp(-(l01*exp(x.val%*%beta01) + l02*exp(x.val%*%beta02)) * s1 - l12^kappa12*exp(x.val%*%beta12)*(t - s1)^kappa12)
+  }, vectorize.args = "s1"), lower = 0, upper = t, x.val = x.val, l01 = l01, l02 = l02, l12, kappa12, t = t)$value
+  
+  return(c(p0, p1))
+}
+solve_for_baseline <- function(x, p_path1, p_C, r, beta01, beta02, beta12, kappa12){
+  l01 <- x[1]
+  l02 <- x[2]
+  l12 <- r * l02
+  # Constraint 1: Taking path 1
+  val1 <- p00*(l01*exp(c(0, 0)%*%beta01) / (l01*exp(c(0, 0)%*%beta01) + l02*exp(c(0, 0)%*%beta02))) + 
+    p01*(l01*exp(c(0, 1)%*%beta01) / (l01*exp(c(0, 1)%*%beta01) + l02*exp(c(0, 1)%*%beta02))) +
+    p10*(l01*exp(c(1, 0)%*%beta01) / (l01*exp(c(1, 0)%*%beta01) + l02*exp(c(1, 0)%*%beta02))) +
+    p11*(l01*exp(c(1, 1)%*%beta01) / (l01*exp(c(1, 1)%*%beta01) + l02*exp(c(1, 1)%*%beta02)))
+  
+  val2 <- p00 * sum(prob_state(A, x.val = c(0, 0), l01, l02, l12, kappa12)) + 
+    p01 * sum(prob_state(A, x.val = c(0, 1), l01, l02, l12, kappa12)) +
+    p10 * sum(prob_state(A, x.val = c(1, 0), l01, l02, l12, kappa12)) +
+    p11 * sum(prob_state(A, x.val = c(1, 1), l01, l02, l12, kappa12))
+  val2 <- 1 - val2
+  
+  # Return residuals
+  return(c(val1 - p_path1, val2 - p_C))
+}
+
+int_fun_for_x_markov12 <- function(x, theta, s){
+  par1 = theta$par1
+  par2 = theta$par2
+  par3 = theta$par3
+  
+  beta01 <- par1[-1]
+  beta02 <- par2[-1]
+  beta12_kappa12 <- par3[-1]
+  
+  beta12 <- beta12_kappa12[-length(beta12_kappa12)]
+  kappa12 <- beta12_kappa12[length(beta12_kappa12)]
+  
+  # baseline
+  l01 = par1[1]
+  l02 = par2[1]
+  l12 = par3[1]
+  # int0 <- integrate(f = function(u, kappa12, a0){u^(kappa12 - 1)*exp(a0*u)}, 
+  #                   lower = 0, upper = s,
+  #                   kappa12 = kappa12, a0 = a0)$value
+  # 
+  # # int0 <- (-1/a0)^kappa12*pgamma(q = -a0*s, shape = kappa12, rate = 1)*gamma(kappa12)
+  # term_before_int0 <- l12^kappa12*kappa12*exp(x%*%beta12)*a0*exp(-a0*s)/(1-exp(-a0*s))
+  
+  int0 <- integrate(f = Vectorize(function(s1, l01, l02, kappa12, s){
+    (s - s1)^(kappa12 - 1)*(l01*exp(x%*%beta01) * exp(-(l01*exp(x%*%beta01) + l02*exp(x%*%beta02)) * s1 - l12^kappa12*exp(x%*%beta12)*(s - s1)^kappa12))}, vectorize.args = "s1"),
+    lower = 0, upper = s, l01 = l01, l02 = l02, kappa12 = kappa12,
+    s = s)$value
+  term_before_int0 <- l12^kappa12*kappa12*exp(x%*%beta12)
+  val0 <- term_before_int0*int0 
+  return(val0)
+}
+
+integrand_fn_markov12 <- function(s, beta, theta){
+  par1 = theta$par1
+  par2 = theta$par2
+  par3 = theta$par3
+  
+  beta01 <- par1[-1]
+  beta02 <- par2[-1]
+  beta12_kappa12 <- par3[-1]
+  
+  beta12 <- beta12_kappa12[-length(beta12_kappa12)]
+  kappa12 <- beta12_kappa12[length(beta12_kappa12)]
+  
+  # baseline
+  l01 = par1[1]
+  l02 = par2[1]
+  l12 = par3[1]
+  
+  r0_s <- p00*int_fun_for_x_markov12(x = c(0, 0), theta, s) +
+    p01*int_fun_for_x_markov12(x = c(0, 1), theta, s) +
+    p10*int_fun_for_x_markov12(x = c(1, 0), theta, s) +
+    p11*int_fun_for_x_markov12(x = c(1, 1), theta, s) 
+  
+  r1_s <- p10*int_fun_for_x_markov12(x = c(1, 0), theta, s) +
+    p11*int_fun_for_x_markov12(x = c(1, 1), theta, s) 
+  
+  r0_s_psi <- p00*prob_state(t = s, x.val = c(0, 0), l01, l02, l12, kappa12)[2] +
+    p01*prob_state(t = s, x.val = c(0, 1), l01, l02, l12, kappa12)[2] +
+    p10*exp(beta)*prob_state(t = s, x.val = c(1, 0), l01, l02, l12, kappa12)[2] +
+    p11*exp(beta)*prob_state(t = s, x.val = c(1, 1), l01, l02, l12, kappa12)[2] 
+  
+  r1_s_psi <- p10*exp(beta)*prob_state(t = s, x.val = c(1, 0), l01, l02, l12, kappa12)[2]+p11*exp(beta)*prob_state(t = s, x.val = c(1, 1), l01, l02, l12, kappa12)[2] 
+  val <- r1_s - r0_s*r1_s_psi/(r0_s_psi + protect_val)
+  return(val)
+}
+
+# we want to integrate f.s over 0 and 1
+F_fn_markov12 <- function(x, theta){
+  integrate(Vectorize(integrand_fn_markov12, vectorize.args = "s"), lower = 0, upper = 1, beta = x, theta = theta)$value
+}
+
+# for cox ============
+# the first part
+int_fun_for_x_cox <- function(x, theta, s){
+  par1 = theta$par1
+  par2 = theta$par2
+  par3 = theta$par3
+  
+  # baseline
+  l01 = par1[1]
+  l02 = par2[1]
+  l12 = par3[1]
+  
+  beta01 <- par1[-1]
+  beta02 <- par2[-1]
+  beta12_kappa12 <- par3[-1]
+  
+  beta12 <- beta12_kappa12[-length(beta12_kappa12)]
+  kappa12 <- beta12_kappa12[length(beta12_kappa12)]
+  
+  part1 <- l02*exp(x%*%beta02)*prob_state(t = s, x.val = x, l01, l02, l12, kappa12)[1]
+  
+  int0 <- integrate(f = Vectorize(function(s1, l01, l02, kappa12, s){
+    (s - s1)^(kappa12 - 1)*(l01*exp(x%*%beta01) * exp(-(l01*exp(x%*%beta01) + l02*exp(x%*%beta02)) * s1 - l12^kappa12*exp(x%*%beta12)*(s - s1)^kappa12))}, vectorize.args = "s1"),
+    lower = 0, upper = s, l01 = l01, l02 = l02, kappa12 = kappa12,
+    s = s)$value
+  
+  term_before_int0 <- l12^kappa12*kappa12*exp(x%*%beta12)
+  
+  part2 <- term_before_int0*int0
+  return(part1 + part2)  
+}
+
+integrand_fn_cox <- function(s, theta, beta){
+  par1 = theta$par1
+  par2 = theta$par2
+  par3 = theta$par3
+  
+  # baseline
+  l01 = par1[1]
+  l02 = par2[1]
+  l12 = par3[1]
+  
+  beta01 <- par1[-1]
+  beta02 <- par2[-1]
+  beta12_kappa12 <- par3[-1]
+  
+  beta12 <- beta12_kappa12[-length(beta12_kappa12)]
+  kappa12 <- beta12_kappa12[length(beta12_kappa12)]
+  
+  # r0_s
+  r0_s <- p00*int_fun_for_x_cox(c(0, 0), theta, s) + 
+    p01*int_fun_for_x_cox(c(0, 1), theta, s) + 
+    p10*int_fun_for_x_cox(c(1, 0), theta, s) + 
+    p11*int_fun_for_x_cox(c(1, 1), theta, s)
+  # r1_s
+  r1_s <- p10*int_fun_for_x_cox(c(1, 0), theta, s) + 
+    p11*int_fun_for_x_cox(c(1, 1), theta, s)
+  # r0_s_psi
+  r0_s_psi <- p00*sum(prob_state(t = s, x.val = c(0, 0), l01, l02, l12, kappa12)) +
+    p01*sum(prob_state(t = s, x.val = c(0, 1), l01, l02, l12, kappa12)) +
+    p10*exp(beta)*sum(prob_state(t = s, x.val = c(1, 0), l01, l02, l12, kappa12)) +
+    p11*exp(beta)*sum(prob_state(t = s, x.val = c(1, 1), l01, l02, l12, kappa12))
+  # r1_s_psi
+  r1_s_psi <- p10*exp(beta)*sum(prob_state(t = s, x.val = c(1, 0), l01, l02, l12, kappa12)) +
+    p11*exp(beta)*sum(prob_state(t = s, x.val = c(1, 1), l01, l02, l12, kappa12))
+  
+  val <- r1_s - r0_s*r1_s_psi/(r0_s_psi + protect_val)
+  
+  return(val)
+}
+
+# we want to integrate f.s over 0 and 1
+F_fn_cox <- function(x, theta){
+  integrate(Vectorize(integrand_fn_cox, vectorize.args = "s"), lower = 0, upper = 1, beta = x, theta = theta)$value
+}
+
+
+# ========== plot (no random censoring) =======================================
+p00 = p01 = p10 = p11 = 0.25
+# plot semi_A1
+protect_val = 1e-6 # this can prevent Inf in integral
+for (setting in 1:2){
+pdf(paste0("semi_A", setting, ".pdf"), width = 4.97, height = 4.97)
+  if(setting == 1){
+    beta01 <- c(log(1), 0)
+    beta02 <- c(log(1.5), 0)
+    beta12 <- c(log(1.5), 0)
+  }else if(setting == 2){
+    beta01 = beta02 = beta12 = c(log(1.5), 0)
+  }
+A = 1
+r = 1
+kappa.seq <- seq(0.5, 2, 0.1)
+res12 <- res.cox <- rep(NA, length(kappa.seq))
+for(i in 1:length(kappa.seq)){
+  kappa12 <- kappa.seq[i]
+  (baselines <- nleqslv(
+    x = c(0.5, 1), # Initial guess
+    fn = solve_for_baseline, # Function to solve
+    p_path1 = 0.7, # Additional arguments
+    p_C = 0.8,
+    r = r,
+    beta01 = beta01,
+    beta02 = beta02,
+    beta12 = beta12,
+    kappa12 = kappa12
+  )$x)
+  l01 <- baselines[1]
+  l02 <- baselines[2]
+  l12 <- r*l02
+  par1 = c(l01, beta01)
+  par2 = c(l02, beta02)
+  par3 = c(l12, beta12, kappa12)
+  # theta list
+  (theta.t <- list(par1 = par1, par2 = par2, par3 = par3))
+  (beta_star <- nleqslv(x = 0, fn = F_fn_markov12, theta = theta.t)$x)
+  res12[i] <- beta_star
+  (beta_star <- nleqslv(x = 0, fn = F_fn_cox, theta = theta.t)$x)
+  res.cox[i] <- beta_star
+}
+
+par(mar = c(5, 7, 4, 2))
+plot(range(kappa.seq), range(res12, res.cox), type = "n", ylab = expression("Limiting values " * beta[12]^"*")
+, xlab = expression(kappa[12]))
+lines(kappa.seq, res12, "l", col = 1) # Markov
+lines(kappa.seq, res.cox, col = 2) # Cox
+abline(v = 1, lty = 2)
+abline(h = beta12, lty = 2)
+# Add legend
+legend("bottomright",
+       legend = c("Markov estimator", "Cox estimator") ,
+       col = 1:2,
+       lty = 1,
+       bty = "n")
+dev.off()
+}
+
+
+
+# 0-1 and 0-2 transition
+integrand_fn_markov01 <- Vectorize(function(s, theta, beta){
+  # which set of par
+  par1 = theta$par1
+  par2 = theta$par2
+  par3 = theta$par3
+  # baseline3
+  l01 = par1[1]
+  l02 = par2[1]
+  l12 = par3[1]
+  
+  beta01 <- par1[-1]
+  beta02 <- par2[-1]
+  beta12_kappa12 <- par3[-1]
+  
+  beta12 <- beta12_kappa12[-length(beta12_kappa12)]
+  kappa12 <- beta12_kappa12[length(beta12_kappa12)]
+  
+  r0_s <- p00*l01*exp(-(l01 + l02)* s) +
+    p10*l01*exp(c(1, 0)%*%beta01)*exp(-(l01*exp(c(1, 0)%*%beta01) + l02*exp(c(1, 0)%*%beta02))* s) +
+    p01*l01*exp(c(0, 1)%*%beta01)*exp(-(l01*exp(c(0, 1)%*%beta01) + l02*exp(c(0, 1)%*%beta02))* s) +
+    p11*l01*exp(c(1, 1)%*%beta01)*exp(-(l01*exp(c(1, 1)%*%beta01) + l02*exp(c(1, 1)%*%beta02))* s)
+  
+  r1_s <- p10*l01*exp(c(1, 0)%*%beta01)*exp(-(l01*exp(c(1, 0)%*%beta01) + l02*exp(c(1, 0)%*%beta02))* s) +
+    p11*l01*exp(c(1, 1)%*%beta01)*exp(-(l01*exp(c(1, 1)%*%beta01) + l02*exp(c(1, 1)%*%beta02))* s)
+  
+  r0_s_psi <- p10 *exp(beta)*exp(-(l01*exp(c(1, 0)%*%beta01) + l02*exp(c(1, 0)%*%beta02))* s) +
+    p11 *exp(beta)*exp(-(l01*exp(c(1, 1)%*%beta01) + l02*exp(c(1, 1)%*%beta02))* s) +
+    p00 *exp(-(l01*exp(c(0, 0)%*%beta01) + l02*exp(c(0, 0)%*%beta02))* s) +
+    p01 *exp(-(l01*exp(c(0, 1)%*%beta01) + l02*exp(c(0, 1)%*%beta02))* s)
+  
+  r1_s_psi <- p10 *exp(beta)*exp(-(l01*exp(c(1, 0)%*%beta01) + l02*exp(c(1, 0)%*%beta02))* s) +
+    p11 *exp(beta)*exp(-(l01*exp(c(1, 1)%*%beta01) + l02*exp(c(1, 1)%*%beta02))* s)
+  
+  val <- r1_s - r0_s*r1_s_psi/(r0_s_psi + protect_val)
+  return(val)
+}, vectorize.args = "s")
+
+integrand_fn_markov02 <- Vectorize(function(s, theta, beta){
+  # which set of par
+  par1 = theta$par1
+  par2 = theta$par2
+  par3 = theta$par3
+  # baseline3
+  l01 = par1[1]
+  l02 = par2[1]
+  l12 = par3[1]
+  
+  beta01 <- par1[-1]
+  beta02 <- par2[-1]
+  beta12_kappa12 <- par3[-1]
+  
+  beta12 <- beta12_kappa12[-length(beta12_kappa12)]
+  kappa12 <- beta12_kappa12[length(beta12_kappa12)]
+  
+  r0_s <- p00*l02*exp(-(l01 + l02)* s) +
+    p10*l02*exp(c(1, 0)%*%beta02)*exp(-(l01*exp(c(1, 0)%*%beta01) + l02*exp(c(1, 0)%*%beta02))* s) +
+    p01*l02*exp(c(0, 1)%*%beta02)*exp(-(l01*exp(c(0, 1)%*%beta01) + l02*exp(c(0, 1)%*%beta02))* s) +
+    p11*l02*exp(c(1, 1)%*%beta02)*exp(-(l01*exp(c(1, 1)%*%beta01) + l02*exp(c(1, 1)%*%beta02))* s)
+  
+  r1_s <- p10*l02*exp(c(1, 0)%*%beta02)*exp(-(l01*exp(c(1, 0)%*%beta01) + l02*exp(c(1, 0)%*%beta02))* s) +
+    p11*l02*exp(c(1, 1)%*%beta02)*exp(-(l01*exp(c(1, 1)%*%beta01) + l02*exp(c(1, 1)%*%beta02))* s)
+  
+  r0_s_psi <- p10 *exp(beta)*exp(-(l01*exp(c(1, 0)%*%beta01) + l02*exp(c(1, 0)%*%beta02))* s) +
+    p11 *exp(beta)*exp(-(l01*exp(c(1, 1)%*%beta01) + l02*exp(c(1, 1)%*%beta02))* s) +
+    p00 *exp(-(l01*exp(c(0, 0)%*%beta01) + l02*exp(c(0, 0)%*%beta02))* s) +
+    p01 *exp(-(l01*exp(c(0, 1)%*%beta01) + l02*exp(c(0, 1)%*%beta02))* s)
+  
+  r1_s_psi <- p10 *exp(beta)*exp(-(l01*exp(c(1, 0)%*%beta01) + l02*exp(c(1, 0)%*%beta02))* s) +
+    p11 *exp(beta)*exp(-(l01*exp(c(1, 1)%*%beta01) + l02*exp(c(1, 1)%*%beta02))* s)
+  val <- r1_s - r0_s*r1_s_psi/(r0_s_psi + protect_val)
+  return(val)
+}, vectorize.args = "s")
+
+F_fn_markov01 <- function(x, theta){
+  integrate( Vectorize(integrand_fn_markov01, vectorize.args = "s"), lower = 0, upper = 1, beta = x, theta = theta)$value
+}
+
+F_fn_markov02 <- function(x, theta){
+  integrate( Vectorize(integrand_fn_markov02, vectorize.args = "s"), lower = 0, upper = 1, beta = x, theta = theta)$value
+}
+
+# Brier score: semi
+# This is the true survival function based on the three-state semi-Markov model
+S_t <- Vectorize(function(t, x, theta){ # the x here is for the true model
+  par1 = theta$par1
+  par2 = theta$par2
+  par3 = theta$par3
+  
+  # baseline3
+  l01 = par1[1]
+  l02 = par2[1]
+  l12 = par3[1]
+  
+  beta01 <- par1[-1]
+  beta02 <- par2[-1]
+  beta12_kappa12 <- par3[-1]
+  
+  beta12 <- beta12_kappa12[-length(beta12_kappa12)]
+  kappa12 <- beta12_kappa12[length(beta12_kappa12)]
+  sum(prob_state(t, x.val = x, l01, l02, l12, kappa12))
+}, vectorize.args = "t")
+
+
+# This is the survival function derived from the Cox model
+dgamma.s.cox <- Vectorize(function(s, theta, beta){ # no need for x here
+  par1 = theta$par1
+  par2 = theta$par2
+  par3 = theta$par3
+  
+  # baseline3
+  l01 = par1[1]
+  l02 = par2[1]
+  l12 = par3[1]
+  
+  beta01 <- par1[-1]
+  beta02 <- par2[-1]
+  beta12_kappa12 <- par3[-1]
+  
+  beta12 <- beta12_kappa12[-length(beta12_kappa12)]
+  kappa12 <- beta12_kappa12[length(beta12_kappa12)]
+  
+  r0_s <- p00*int_fun_for_x_cox(c(0, 0), theta, s) + 
+    p01*int_fun_for_x_cox(c(0, 1), theta, s) + 
+    p10*int_fun_for_x_cox(c(1, 0), theta, s) + 
+    p11*int_fun_for_x_cox(c(1, 1), theta, s)
+  
+  r0_s_psi <- p00*sum(prob_state(t = s, x.val = c(0, 0), l01, l02, l12, kappa12)) +
+    p01*sum(prob_state(t = s, x.val = c(0, 1), l01, l02, l12, kappa12)) +
+    p10*exp(beta)*sum(prob_state(t = s, x.val = c(1, 0), l01, l02, l12, kappa12)) +
+    p11*exp(beta)*sum(prob_state(t = s, x.val = c(1, 1), l01, l02, l12, kappa12))
+  
+  r0_s/r0_s_psi
+}, vectorize.args = "s")
+
+# plot(t.seq, dgamma.s(t.seq, theta.t, beta_star))
+
+gamma_star_t <- function(t, theta, beta){
+  integrate(dgamma.s.cox, lower = 0, upper = t, theta, beta = beta)$value
+}
+
+# plot the survival function
+coxph_st <- Vectorize(function(t, x.val, theta.t, beta_star){ # here, x.val is the X you used in the working model, for example, X1
+  exp(-gamma_star_t(t, theta = theta.t, beta = beta_star)*exp(x.val%*%beta_star))
+}, vectorize.args = "t")
+
+# This is the survival function derived from the 3state-Markov model
+# dgamma01.s
+dgamma01.markov <- Vectorize(function(s, theta, beta){
+  # which set of par
+  par1 = theta$par1
+  par2 = theta$par2
+  par3 = theta$par3
+  # baseline3
+  l01 = par1[1]
+  l02 = par2[1]
+  l12 = par3[1]
+  
+  beta01 <- par1[-1]
+  beta02 <- par2[-1]
+  beta12_kappa12 <- par3[-1]
+  
+  beta12 <- beta12_kappa12[-length(beta12_kappa12)]
+  kappa12 <- beta12_kappa12[length(beta12_kappa12)]
+  
+  r0_s <- p00*l01*exp(-(l01 + l02)* s) +
+    p10*l01*exp(c(1, 0)%*%beta01)*exp(-(l01*exp(c(1, 0)%*%beta01) + l02*exp(c(1, 0)%*%beta02))* s) +
+    p01*l01*exp(c(0, 1)%*%beta01)*exp(-(l01*exp(c(0, 1)%*%beta01) + l02*exp(c(0, 1)%*%beta02))* s) +
+    p11*l01*exp(c(1, 1)%*%beta01)*exp(-(l01*exp(c(1, 1)%*%beta01) + l02*exp(c(1, 1)%*%beta02))* s)
+  r0_s_psi <- p10 *exp(beta)*exp(-(l01*exp(c(1, 0)%*%beta01) + l02*exp(c(1, 0)%*%beta02))* s) +
+    p11 *exp(beta)*exp(-(l01*exp(c(1, 1)%*%beta01) + l02*exp(c(1, 1)%*%beta02))* s) +
+    p00 *exp(-(l01*exp(c(0, 0)%*%beta01) + l02*exp(c(0, 0)%*%beta02))* s) +
+    p01 *exp(-(l01*exp(c(0, 1)%*%beta01) + l02*exp(c(0, 1)%*%beta02))* s)
+  val <- r0_s/r0_s_psi
+  return(val)
+}, vectorize.args = "s")
+
+dgamma02.markov <- Vectorize(function(s, theta, beta){
+  # which set of par
+  par1 = theta$par1
+  par2 = theta$par2
+  par3 = theta$par3
+  # baseline3
+  l01 = par1[1]
+  l02 = par2[1]
+  l12 = par3[1]
+  
+  beta01 <- par1[-1]
+  beta02 <- par2[-1]
+  beta12_kappa12 <- par3[-1]
+  
+  beta12 <- beta12_kappa12[-length(beta12_kappa12)]
+  kappa12 <- beta12_kappa12[length(beta12_kappa12)]
+  
+  r0_s <- p00*l02*exp(-(l01 + l02)* s) +
+    p10*l02*exp(c(1, 0)%*%beta02)*exp(-(l01*exp(c(1, 0)%*%beta01) + l02*exp(c(1, 0)%*%beta02))* s) +
+    p01*l02*exp(c(0, 1)%*%beta02)*exp(-(l01*exp(c(0, 1)%*%beta01) + l02*exp(c(0, 1)%*%beta02))* s) +
+    p11*l02*exp(c(1, 1)%*%beta02)*exp(-(l01*exp(c(1, 1)%*%beta01) + l02*exp(c(1, 1)%*%beta02))* s)
+  r0_s_psi <- p10 *exp(beta)*exp(-(l01*exp(c(1, 0)%*%beta01) + l02*exp(c(1, 0)%*%beta02))* s) +
+    p11 *exp(beta)*exp(-(l01*exp(c(1, 1)%*%beta01) + l02*exp(c(1, 1)%*%beta02))* s) +
+    p00 *exp(-(l01*exp(c(0, 0)%*%beta01) + l02*exp(c(0, 0)%*%beta02))* s) +
+    p01 *exp(-(l01*exp(c(0, 1)%*%beta01) + l02*exp(c(0, 1)%*%beta02))* s)
+  val <- r0_s/r0_s_psi
+  return(val)
+}, vectorize.args = "s")
+# dgamma02.s
+
+# dgamma12.s
+dgamma12.markov <- Vectorize(function(s, theta, beta){ # no need for x here
+  par1 = theta$par1
+  par2 = theta$par2
+  par3 = theta$par3
+  # baseline3
+  l01 = par1[1]
+  l02 = par2[1]
+  l12 = par3[1]
+  
+  beta01 <- par1[-1]
+  beta02 <- par2[-1]
+  beta12_kappa12 <- par3[-1]
+  
+  beta12 <- beta12_kappa12[-length(beta12_kappa12)]
+  kappa12 <- beta12_kappa12[length(beta12_kappa12)]
+  
+  r0_s <- p00*int_fun_for_x_markov12(c(0, 0), theta, s) + 
+    p01*int_fun_for_x_markov12(c(0, 1), theta, s) + 
+    p10*int_fun_for_x_markov12(c(1, 0), theta, s) + 
+    p11*int_fun_for_x_markov12(c(1, 1), theta, s)
+  
+  r0_s_psi <- p00*sum(prob_state(t = s, x.val = c(0, 0), l01, l02, l12, kappa12)) +
+    p01*sum(prob_state(t = s, x.val = c(0, 1), l01, l02, l12, kappa12)) +
+    p10*exp(beta)*sum(prob_state(t = s, x.val = c(1, 0), l01, l02, l12, kappa12)) +
+    p11*exp(beta)*sum(prob_state(t = s, x.val = c(1, 1), l01, l02, l12, kappa12))
+  
+  val <- r0_s/r0_s_psi
+  return(val)
+}, vectorize.args = "s")
+# dgamma12.markov(u, theta, beta12_star)
+markov_st <- Vectorize(function(t, theta, x.val, beta_star_markov01, beta_star_markov02, beta_star_markov12){
+  int1 <- Vectorize(
+    function(u, theta) {
+      dgamma01.markov(u, theta, beta_star_markov01) * exp(x.val %*% beta_star_markov01) + dgamma02.markov(u, theta, beta_star_markov02)*exp(x.val%*%beta_star_markov02)}, vectorize.args = "u")
+  
+  int2 <- Vectorize(function(u){dgamma12.markov(u, theta, beta_star_markov12)*exp(x.val%*%beta_star_markov12)}, vectorize.args = "u")
+  # for P(Z(t) = 0), this is
+  p0 <- exp(-integrate(f = int1, lower = 0, upper = t, theta)$value)
+  # For P(Z(t) = 1), this is
+  int_all <- Vectorize(function(s){
+    exp(-integrate(f = int1, lower = 0, upper = s, theta)$value)*dgamma01.markov(s, theta, beta_star_markov01)*exp(x.val%*%beta_star_markov01)*exp(-integrate(f = int2, lower = s, upper = t)$value)}, vectorize.args = "s")
+  
+  p1 <- integrate(int_all, lower = 0, upper = t)$value
+  return(c(p0+ p1))}, 
+  vectorize.args = "t")
+
+
+# === Brier score ========
+bs_cox <- Vectorize(function(t, theta.t, beta_star){
+  p11*(S_t(t, x = c(1, 1), theta.t)*(1 - S_t(t, x = c(1, 1), theta.t)) + 
+         (S_t(t, x = c(1, 1), theta.t) - coxph_st(t, x.val = 1, theta.t, beta_star))^2) +
+    p10*(S_t(t, x = c(1, 0), theta.t)*(1 - S_t(t, x = c(1, 0), theta.t)) + 
+           (S_t(t, x = c(1, 0), theta.t) - coxph_st(t, x = 1, theta.t, beta_star))^2) +
+    p01*(S_t(t, x = c(0, 1), theta.t)*(1 - S_t(t, x = c(0, 1), theta.t)) + 
+           (S_t(t, x = c(0, 1), theta.t) - coxph_st(t, x.val = 0, theta.t, beta_star))^2) +
+    p00*(S_t(t, x = c(0, 0), theta.t)*(1 - S_t(t, x = c(0, 0), theta.t)) + 
+           (S_t(t, x = c(0, 0), theta.t) - coxph_st(t, x.val = 0, theta.t, beta_star))^2)
+}, vectorize.args = "t")
+
+
+bs_markov <- Vectorize(function(t, theta.t, beta_star_markov01, beta_star_markov02, beta_star_markov12){
+  p11*(S_t(t, x = c(1, 1), theta.t)*(1 - S_t(t, x = c(1, 1), theta.t)) + 
+         (S_t(t, x = c(1, 1), theta.t) - markov_st(t, x.val = 1, theta.t, beta_star_markov01, beta_star_markov02, beta_star_markov12))^2) +
+    p10*(S_t(t, x = c(1, 0), theta.t)*(1 - S_t(t, x = c(1, 0), theta.t)) + 
+           (S_t(t, x = c(1, 0), theta.t) - markov_st(t, x = 1, theta.t, beta_star_markov01, beta_star_markov02, beta_star_markov12))^2) +
+    p01*(S_t(t, x = c(0, 1), theta.t)*(1 - S_t(t, x = c(0, 1), theta.t)) + 
+           (S_t(t, x = c(0, 1), theta.t) - markov_st(t, x.val = 0, theta.t, beta_star_markov01, beta_star_markov02, beta_star_markov12))^2) +
+    p00*(S_t(t, x = c(0, 0), theta.t)*(1 - S_t(t, x = c(0, 0), theta.t)) + 
+           (S_t(t, x = c(0, 0), theta.t) - markov_st(t, x.val = 0, theta.t, beta_star_markov01, beta_star_markov02, beta_star_markov12))^2)
+}, vectorize.args = "t")
+
+
+# bs for true model
+bs_insep <- Vectorize(function(t, theta.t){
+  p11*S_t(t, x = c(1, 1), theta.t)*(1 - S_t(t, x = c(1, 1), theta.t)) +
+    p10*S_t(t, x = c(1, 0), theta.t)*(1 - S_t(t, x = c(1, 0), theta.t)) +
+    p01*S_t(t, x = c(0, 1), theta.t)*(1 - S_t(t, x = c(0, 1), theta.t)) +
+    p00*S_t(t, x = c(0, 0), theta.t)*(1 - S_t(t, x = c(0, 0), theta.t)) 
+}, vectorize.args = "t")
+
+
+# plot BS ====
+# plot semi_A1
+t.seq <- seq(0.01, 2, 0.1)
+p11 = p10 = p00 = p01 = 0.25
+for(setting in 1:2){
+  if(setting == 1){
+    beta01 <- c(log(1), 0)
+    beta02 <- c(log(1.5), 0)
+    beta12 <- c(log(1.5), 0)
+  }else if(setting == 2){
+    beta01 <- c(log(1.5), 0)
+    beta02 <- c(log(1.5), 0)
+    beta12 <- c(log(1.5), 0)
+  }
+
+protect_val = 1e-6 # this can prevent Inf in integral
+A = 1
+r = 1
+kappa12 <- 0.5
+
+res12 <- res.cox <- rep(NA, length(kappa.seq))
+  (baselines <- nleqslv(
+    x = c(0.5, 1), # Initial guess
+    fn = solve_for_baseline, # Function to solve
+    p_path1 = 0.7, # Additional arguments
+    p_C = 0.8,
+    r = r,
+    beta01 = beta01,
+    beta02 = beta02,
+    beta12 = beta12,
+    kappa12 = kappa12
+  )$x)
+  l01 <- baselines[1]
+  l02 <- baselines[2]
+  l12 <- r*l02
+  par1 = c(l01, beta01)
+  par2 = c(l02, beta02)
+  par3 = c(l12, beta12, kappa12)
+  # theta list
+  (theta.t <- list(par1 = par1, par2 = par2, par3 = par3))
+  
+  # beta_star from 3state
+  (beta_star_markov01 <- nleqslv(x = log(1.2), fn = F_fn_markov01, theta = theta.t)$x)
+  (beta_star_markov02 <- nleqslv(x = log(1.2), fn = F_fn_markov02, theta = theta.t)$x)
+  (beta_star_markov12 <- nleqslv(x = log(1.2), fn = F_fn_markov12, theta = theta.t)$x)
+  (beta_star_cox <- nleqslv(x = log(1.2), fn = F_fn_cox, theta = theta.t)$x)
+  bs.insep <- bs_insep(t.seq, theta.t) # true bs
+  bs.markov<- bs_markov(t.seq, theta.t, beta_star_markov01, beta_star_markov02, beta_star_markov12) # bs
+  bs.cox <- bs_cox(t.seq, theta.t,beta_star_cox) # bs
+  
+  pdf(paste0("semi_bs_", setting, ".pdf"), width = 4.97, height = 4.97)
+  par(mar = c(5, 5, 4, 2))
+  plot(t.seq, bs.markov, type = "l", xlab = "Time", ylab = expression(BS(t)), ylim = c(0, 0.26), col = 2, lty = 1, lwd = 2)
+  lines(t.seq, bs.insep, col = 1, lty = 3, lwd = 2)
+  lines(t.seq, bs.cox, col = 3, lty = 2, lwd = 2)
+  legend("bottomright", col = 1:3, legend = c("True", "3-state omitting", "Cox omitting"), lty = c(3, 1, 2), bty = "n")
+  dev.off()  
+}
