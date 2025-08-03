@@ -1,0 +1,590 @@
+# this code include (1) functions to calculate the limiting values for regression coeffcients obtained from a 3-state model, when important covariates are omitted
+# (2) functions to calculate Brier score for Cox regression models
+protect_val <- 1e-9
+A <- 1
+# rate function
+q_fn <- function(theta, x){
+  # which set of par
+  par1 = theta$par1
+  par2 = theta$par2
+  par3 = theta$par3
+  
+  beta01 <- par1[-1]
+  beta02 <- par2[-1]
+  beta12 <- par3[-1]
+  
+  # baseline
+  l01 = par1[1]
+  l02 = par2[1]
+  l12 = par3[1]
+  
+  q <- rbind(c(-l01*as.vector(exp(x%*%beta01))- l02*as.vector(exp(x%*%beta02)), l01*as.vector(exp(x%*%beta01)), l02*as.vector(exp(x%*%beta02))),
+             c(0,-l12*as.vector(exp(x%*%beta12)), l12*as.vector(exp(x%*%beta12))),
+             c(0, 0, 0))
+  return(q)
+}
+
+
+p_fn <- function(qmat, start, end){
+  l1 = -qmat[1,1]
+  l2 = -qmat[2,2]
+  if (start  ==  end){
+    p = diag(3)
+  }else{
+    p = expm(qmat*(end - start))
+  }
+  return(p)
+}
+
+solve_for_baseline_2cov <- function(x, p_path1, p_A, r){ # P_A = P(T < A)  = P(Z(A) = 2)
+  l01 <- x[1]; l02 <- x[2]; l12 <- r*l02
+  par1 = c(l01, beta01)
+  par2 = c(l02, beta02)
+  par3 = c(l12, beta12)
+  # theta list
+  (theta <- list(par1 = par1, par2 = par2, par3 = par3))
+  
+  val1 <- p11*(l01*exp(beta01%*%c(1,1))/(l01*exp(beta01%*%c(1,1)) + l02*exp(beta02%*%c(1,1)))) +
+    p10*(l01*exp(beta01%*%c(1,0))/(l01*exp(beta01%*%c(1,0)) + l02*exp(beta02%*%c(1,0)))) +
+    p01*(l01*exp(beta01%*%c(0,1))/(l01*exp(beta01%*%c(0,1)) + l02*exp(beta02%*%c(0,1)))) +
+    p00*(l01*exp(beta01%*%c(0,0))/(l01*exp(beta01%*%c(0,0)) + l02*exp(beta02%*%c(0,0))))
+  
+  qmat11 <- q_fn(theta, x = c(1, 1))
+  qmat10 <- q_fn(theta, x = c(1, 0))
+  qmat01 <- q_fn(theta, x = c(0, 1))
+  qmat00 <- q_fn(theta, x = c(0, 0))
+  
+  val2 <-  p11*p_fn(qmat11, 0, 1)[1, 3] + 
+    p10*p_fn(qmat10, 0, 1)[1, 3] + 
+    p01*p_fn(qmat01, 0, 1)[1, 3] + 
+    p00*p_fn(qmat00, 0, 1)[1, 3]
+  
+  return(c(val1 - p_path1, val2 - p_A))
+}
+
+f.cox.rc <- Vectorize(function(s, beta, theta){
+  par1 = theta$par1; par2 = theta$par2; par3 = theta$par3
+  beta01 <- par1[-1]; beta02 <- par2[-1]; beta12 <- par3[-1]
+  l01 = par1[1]; l02 = par2[1]; l12 = par3[1]
+  qmat11 <- q_fn(theta, x = c(1, 1))
+  qmat10 <- q_fn(theta, x = c(1, 0))
+  qmat01 <- q_fn(theta, x = c(0, 1))
+  qmat00 <- q_fn(theta, x = c(0, 0))
+  
+  r0_s <- p11*(l02*exp(beta02%*%c(1, 1))*p_fn(qmat11, 0, s)[1,1] + l12*exp(beta12%*%c(1, 1))*p_fn(qmat11, 0, s)[1,2]) +
+    p10*(l02*exp(beta02%*%c(1, 0))*p_fn(qmat10, 0, s)[1,1] + l12*exp(beta12%*%c(1, 0))*p_fn(qmat10, 0, s)[1,2]) +
+    p01*(l02*exp(beta02%*%c(0, 1))*p_fn(qmat01, 0, s)[1,1] + l12*exp(beta12%*%c(0, 1))*p_fn(qmat01, 0, s)[1,2]) +
+    p00*(l02*exp(beta02%*%c(0, 0))*p_fn(qmat00, 0, s)[1,1] + l12*exp(beta12%*%c(0, 0))*p_fn(qmat00, 0, s)[1,2])
+  
+  r1_s <- p11*(l02*exp(beta02%*%c(1, 1))*p_fn(qmat11, 0, s)[1,1] + l12*exp(beta12%*%c(1, 1))*p_fn(qmat11, 0, s)[1,2]) +
+    p10*(l02*exp(beta02%*%c(1, 0))*p_fn(qmat10, 0, s)[1,1] + l12*exp(beta12%*%c(1, 0))*p_fn(qmat10, 0, s)[1,2])
+  
+  r0_s_psi <-  p11*exp(beta)*(1 - p_fn(qmat11, 0, s)[1,3]) +
+    p10*exp(beta)*(1 - p_fn(qmat10, 0, s)[1,3]) +
+    p01*(1 - p_fn(qmat01, 0, s)[1,3]) +
+    p00*(1 - p_fn(qmat00, 0, s)[1,3])
+  
+  r1_s_psi <- p11*exp(beta)*(1 - p_fn(qmat11, 0, s)[1,3]) +
+    p10*exp(beta)*(1 - p_fn(qmat10, 0, s)[1,3])
+  
+  val <- r1_s - r0_s *r1_s_psi/(r0_s_psi + protect_val)
+  # val <- val*pc(s)
+  return(val)
+}, vectorize.args = "s")
+
+# integral (x means 'beta')
+F_fn_beta_cox <- function(x, theta){
+  integrate(f.cox.rc, lower = 0, upper = 1, beta = x, theta = theta)$value
+}
+# ============== start plotting: plot 1, cox inverse U shape =========================
+library(nleqslv)
+# now we derive the score equation (for each beta) for the illness-death model
+# beta01 
+r0_s_beta01 <- function(s, theta){
+  # which set of par
+  par1 = theta$par1
+  par2 = theta$par2
+  par3 = theta$par3
+  
+  beta01 <- par1[-1]
+  beta02 <- par2[-1]
+  beta12 <- par3[-1]
+  
+  # baseline
+  l01 = par1[1]
+  l02 = par2[1]
+  l12 = par3[1]
+  
+  qmat11 <- q_fn(theta, x = c(1, 1))
+  qmat10 <- q_fn(theta, x = c(1, 0))
+  qmat01 <- q_fn(theta, x = c(0, 1))
+  qmat00 <- q_fn(theta, x = c(0, 0))
+  
+  val <- p11*(l01*exp(beta01%*%c(1, 1))*p_fn(qmat11, 0, s)[1,1]) +
+    p10*(l01*exp(beta01%*%c(1, 0))*p_fn(qmat10, 0, s)[1,1]) +
+    p01*(l01*exp(beta01%*%c(0, 1))*p_fn(qmat01, 0, s)[1,1]) +
+    p00*(l01*exp(beta01%*%c(0, 0))*p_fn(qmat00, 0, s)[1,1])
+  # independent censoring
+  # val <- val*pc(s)
+  return(val)
+}
+
+# r1_s
+r1_s_beta01 <- function(s, theta){
+  # which set of par
+  par1 = theta$par1
+  par2 = theta$par2
+  par3 = theta$par3
+  
+  beta01 <- par1[-1]
+  beta02 <- par2[-1]
+  beta12 <- par3[-1]
+  
+  # baseline
+  l01 = par1[1]
+  l02 = par2[1]
+  l12 = par3[1]
+  qmat11 <- q_fn(theta, x = c(1, 1))
+  qmat10 <- q_fn(theta, x = c(1, 0))
+  val <-  p11*(l01*exp(beta01%*%c(1, 1))*p_fn(qmat11, 0, s)[1,1]) +
+    p10*(l01*exp(beta01%*%c(1, 0))*p_fn(qmat10, 0, s)[1,1])
+  # independent censoring
+  # val <- val*pc(s)
+  return(val)
+}
+
+# r1_s_psi (psi is the regression coefficient for x, in the code, it is called 'beta')
+r0_s_psi_beta01 <- function(s, beta, theta){
+  qmat11 <- q_fn(theta, x = c(1, 1))
+  qmat10 <- q_fn(theta, x = c(1, 0))
+  qmat01 <- q_fn(theta, x = c(0, 1))
+  qmat00 <- q_fn(theta, x = c(0, 0))
+  
+  val <- p11*exp(beta)*p_fn(qmat11, 0, s)[1,1] + 
+    p10*exp(beta)*p_fn(qmat10, 0, s)[1,1] +
+    p01*p_fn(qmat01, 0, s)[1,1] +
+    p00*p_fn(qmat00, 0, s)[1,1]
+  # independent censoring
+  # val <- val*pc(s)
+  return(val)
+}
+
+r1_s_psi_beta01 <- function(s, beta, theta){
+  qmat11 <- q_fn(theta, x = c(1, 1))
+  qmat10 <- q_fn(theta, x = c(1, 0))
+  val <-  p11*exp(beta)*p_fn(qmat11, 0, s)[1,1] + 
+    p10*exp(beta)*p_fn(qmat10, 0, s)[1,1]
+  # independent censoring
+  # val <- val*pc(s)
+  return(val)
+}
+
+# integrand
+integrand_fn_beta01 <- function(s, beta, theta){
+  val <- r1_s_beta01(s, theta) - r0_s_beta01(s, theta)*r1_s_psi_beta01(s, beta, theta)/(r0_s_psi_beta01(s, beta, theta) + protect_val)
+  return(val)
+}
+
+# vectorize the function
+f.s.beta01 <- Vectorize(integrand_fn_beta01, vectorize.args = "s") 
+# f.s(s = 1, beta = log(1.2), theta = theta.t)
+
+# integral (x means 'beta')
+F_fn_beta01 <- function(x, theta){
+  integrate(f.s.beta01, lower = 0, upper = 1, beta = x, theta = theta)$value
+}
+
+# =================== beta02 ========================================================================
+r0_s_beta02 <- function(s, theta){
+  # which set of par
+  par1 = theta$par1
+  par2 = theta$par2
+  par3 = theta$par3
+  
+  beta01 <- par1[-1]
+  beta02 <- par2[-1]
+  beta12 <- par3[-1]
+  
+  # baseline
+  l01 = par1[1]
+  l02 = par2[1]
+  l12 = par3[1]
+  
+  qmat11 <- q_fn(theta, x = c(1, 1))
+  qmat10 <- q_fn(theta, x = c(1, 0))
+  qmat01 <- q_fn(theta, x = c(0, 1))
+  qmat00 <- q_fn(theta, x = c(0, 0))
+  
+  val <- p11*(l02*exp(beta02%*%c(1, 1))*p_fn(qmat11, 0, s)[1,1]) +
+    p10*(l02*exp(beta02%*%c(1, 0))*p_fn(qmat10, 0, s)[1,1]) +
+    p01*(l02*exp(beta02%*%c(0, 1))*p_fn(qmat01, 0, s)[1,1]) +
+    p00*(l02*exp(beta02%*%c(0, 0))*p_fn(qmat00, 0, s)[1,1]) 
+  # independent censoring
+  # val <- val*pc(s)
+  return(val)
+}
+
+# r0_s_beta02(1, theta.t)
+
+# r1_s
+r1_s_beta02 <- function(s, theta){
+  # which set of par
+  par1 = theta$par1
+  par2 = theta$par2
+  par3 = theta$par3
+  
+  beta01 <- par1[-1]
+  beta02 <- par2[-1]
+  beta12 <- par3[-1]
+  
+  # baseline
+  l01 = par1[1]
+  l02 = par2[1]
+  l12 = par3[1]
+  qmat11 <- q_fn(theta, x = c(1, 1))
+  qmat10 <- q_fn(theta, x = c(1, 0))
+  val <-  p11*(l02*exp(beta02%*%c(1, 1))*p_fn(qmat11, 0, s)[1,1]) +
+    p10*(l02*exp(beta02%*%c(1, 0))*p_fn(qmat10, 0, s)[1,1])
+  # independent censoring
+  # val <- val*pc(s)
+  return(val)
+}
+# 
+# r1_s_beta02(s = 1, theta.t)
+# r1_s_beta02(s = 1, theta.t)/r0_s_beta02(s = 1, theta.t)
+
+
+# r1_s_psi (psi is the regression coefficient for x, in the code, it is called 'beta')
+r0_s_psi_beta02 <- function(s, beta, theta){
+  qmat11 <- q_fn(theta, x = c(1, 1))
+  qmat10 <- q_fn(theta, x = c(1, 0))
+  qmat01 <- q_fn(theta, x = c(0, 1))
+  qmat00 <- q_fn(theta, x = c(0, 0))
+  
+  val <- p11*exp(beta)*p_fn(qmat11, 0, s)[1,1] + 
+    p10*exp(beta)*p_fn(qmat10, 0, s)[1,1] +
+    p01*p_fn(qmat01, 0, s)[1,1] +
+    p00*p_fn(qmat00, 0, s)[1,1]
+  # independent censoring
+  # val <- val*pc(s)
+  return(val)
+}
+# r0_s_psi(s = 1, beta = log(1.2), theta.t)
+# r0_s_psi
+
+r1_s_psi_beta02 <- function(s, beta, theta){
+  qmat11 <- q_fn(theta, x = c(1, 1))
+  qmat10 <- q_fn(theta, x = c(1, 0))
+  val <-  p11*exp(beta)*p_fn(qmat11, 0, s)[1,1] + 
+    p10*exp(beta)*p_fn(qmat10, 0, s)[1,1]
+  # independent censoring
+  # val <- val*pc(s)
+  return(val)
+}
+
+# integrand
+integrand_fn_beta02 <- function(s, beta, theta){
+  val <- r1_s_beta02(s, theta) - r0_s_beta02(s, theta)*r1_s_psi_beta02(s, beta, theta)/(r0_s_psi_beta02(s, beta, theta) + protect_val)
+  return(val)
+}
+
+# integrand_fn_beta02(s = 1, beta = log(1.2), theta.t)
+
+# vectorize the function
+f.s.beta02 <- Vectorize(integrand_fn_beta02, vectorize.args = "s") 
+# f.s(s = 1, beta = log(1.2), theta = theta.t)
+
+# plot the integrand
+# (s.seq <- seq(0, 100, 0.1))
+# f.s.beta02(s.seq, beta = log(1.2), theta = theta.t)
+# plot(s.seq, f.s.beta02(s.seq, beta = log(1.2), theta = theta.t), "l")
+
+# integral (x means 'beta')
+F_fn_beta02 <- function(x, theta){
+  integrate(f.s.beta02, lower = 0, upper = 1, beta = x, theta = theta)$value
+}
+
+r0_s_beta12 <- function(s, theta){
+  # which set of par
+  par1 = theta$par1
+  par2 = theta$par2
+  par3 = theta$par3
+  
+  beta01 <- par1[-1]
+  beta02 <- par2[-1]
+  beta12 <- par3[-1]
+  
+  # baseline
+  l01 = par1[1]
+  l02 = par2[1]
+  l12 = par3[1]
+  
+  qmat11 <- q_fn(theta, x = c(1, 1))
+  qmat10 <- q_fn(theta, x = c(1, 0))
+  qmat01 <- q_fn(theta, x = c(0, 1))
+  qmat00 <- q_fn(theta, x = c(0, 0))
+  
+  val <- p11*(l12*exp(beta12%*%c(1, 1))*p_fn(qmat11, 0, s)[1,2]) +
+    p10*(l12*exp(beta12%*%c(1, 0))*p_fn(qmat10, 0, s)[1,2]) +
+    p01*(l12*exp(beta12%*%c(0, 1))*p_fn(qmat01, 0, s)[1,2]) +
+    p00*(l12*exp(beta12%*%c(0, 0))*p_fn(qmat00, 0, s)[1,2]) 
+  # independent censoring
+  # val <- val*pc(s)
+  return(val)
+}
+
+# r0_s_beta12(1, theta.t)
+
+# r1_s
+r1_s_beta12 <- function(s, theta){
+  # which set of par
+  par1 = theta$par1
+  par2 = theta$par2
+  par3 = theta$par3
+  
+  beta01 <- par1[-1]
+  beta02 <- par2[-1]
+  beta12 <- par3[-1]
+  
+  # baseline
+  l01 = par1[1]
+  l02 = par2[1]
+  l12 = par3[1]
+  qmat11 <- q_fn(theta, x = c(1, 1))
+  qmat10 <- q_fn(theta, x = c(1, 0))
+  val <-  p11*(l12*exp(beta12%*%c(1, 1))*p_fn(qmat11, 0, s)[1,2]) +
+    p10*(l12*exp(beta12%*%c(1, 0))*p_fn(qmat10, 0, s)[1,2])
+  # independent censoring
+  # val <- val*pc(s)
+  return(val)
+}
+
+# r1_s_beta12(s = 1, theta.t)
+
+
+# r1_s_psi (psi is the regression coefficient for x, in the code, it is called 'beta')
+r0_s_psi_beta12 <- function(s, beta, theta){
+  qmat11 <- q_fn(theta, x = c(1, 1))
+  qmat10 <- q_fn(theta, x = c(1, 0))
+  qmat01 <- q_fn(theta, x = c(0, 1))
+  qmat00 <- q_fn(theta, x = c(0, 0))
+  
+  val <- p11*exp(beta)*p_fn(qmat11, 0, s)[1,2] + 
+    p10*exp(beta)*p_fn(qmat10, 0, s)[1,2] +
+    p01*p_fn(qmat01, 0, s)[1,2] +
+    p00*p_fn(qmat00, 0, s)[1,2]
+  # independent censoring
+  # val <- val*pc(s)
+  return(val)
+}
+# r0_s_psi(s = 1, beta = log(1.2), theta.t)
+# r0_s_psi
+
+r1_s_psi_beta12 <- function(s, beta, theta){
+  qmat11 <- q_fn(theta, x = c(1, 1))
+  qmat10 <- q_fn(theta, x = c(1, 0))
+  val <-  p11*exp(beta)*p_fn(qmat11, 0, s)[1,2] + 
+    p10*exp(beta)*p_fn(qmat10, 0, s)[1,2]
+  # independent censoring
+  # val <- val*pc(s)
+  return(val)
+}
+
+# integrand
+integrand_fn_beta12 <- function(s, beta, theta){
+  val <- r1_s_beta12(s, theta) - r0_s_beta12(s, theta)*r1_s_psi_beta12(s, beta, theta)/(r0_s_psi_beta12(s, beta, theta) + protect_val)
+  return(val)
+}
+
+# integrand_fn_beta12(s = 1, beta = log(1.2), theta.t)
+
+# vectorize the function
+f.s.beta12 <- Vectorize(integrand_fn_beta12, vectorize.args = "s") 
+# f.s(s = 1, beta = log(1.2), theta = theta.t)
+
+# plot the integrand
+# (s.seq <- seq(0, 100, 0.1))
+# f.s.beta12(s.seq, beta = log(1.2), theta = theta.t)
+# plot(s.seq, f.s(s.seq, beta = log(1.2), theta = theta.t), "l")
+
+# integral (x means 'beta')
+F_fn_beta12 <- function(x, theta){
+  integrate(f.s.beta12, lower = 0, upper = 1, beta = x, theta = theta)$value
+}
+
+# ===== prediction === 
+dgamma.cox.s <- Vectorize(function(s, theta, psi_star){
+  # which set of par
+  par1 = theta$par1
+  par2 = theta$par2
+  par3 = theta$par3
+  beta01 <- par1[-1]
+  beta02 <- par2[-1]
+  beta12 <- par3[-1]
+  # baseline
+  l01 = par1[1]
+  l02 = par2[1]
+  l12 = par3[1]
+  qmat11 <- q_fn(theta, x = c(1, 1))
+  qmat10 <- q_fn(theta, x = c(1, 0))
+  qmat01 <- q_fn(theta, x = c(0, 1))
+  qmat00 <- q_fn(theta, x = c(0, 0))
+  # what is gamma?
+  num <- p11*(l02*exp(beta02%*%c(1, 1))*p_fn(qmat11, 0, s)[1,1] + l12*exp(beta12%*%c(1, 1))*p_fn(qmat11, 0, s)[1,2]) +
+    p10*(l02*exp(beta02%*%c(1, 0))*p_fn(qmat10, 0, s)[1,1] + l12*exp(beta12%*%c(1, 0))*p_fn(qmat10, 0, s)[1,2]) +
+    p01*(l02*exp(beta02%*%c(0, 1))*p_fn(qmat01, 0, s)[1,1] + l12*exp(beta12%*%c(0, 1))*p_fn(qmat01, 0, s)[1,2]) +
+    p00*(l02*exp(beta02%*%c(0, 0))*p_fn(qmat00, 0, s)[1,1] + l12*exp(beta12%*%c(0, 0))*p_fn(qmat00, 0, s)[1,2])
+  
+  deno <- p11*exp(psi_star%*%c(1))*(1 - p_fn(qmat11, 0, s)[1,3]) +
+    p10*exp(psi_star %*% c(1))*(1 - p_fn(qmat10, 0, s)[1,3]) +
+    p00*exp(psi_star %*% c(0))*(1 - p_fn(qmat00, 0, s)[1,3]) +
+    p01*exp(psi_star %*% c(0))*(1 - p_fn(qmat01, 0, s)[1,3])
+  
+  num/deno
+}, vectorize.args = "s")
+
+# plot the survival function
+coxph_st <- Vectorize(function(t, x.val, beta_star, theta.t){ # x.val refers to the working model
+  exp(-integrate(dgamma.cox.s, lower = 0, upper = t, theta.t, psi_star = beta_star)$value*exp(x.val%*%beta_star))
+}, vectorize.args = "t")
+# add the survival function for the 3state model (true process)
+S_t <- Vectorize(function(t, x, theta){
+  qmat <- q_fn(theta, x = x)
+  1 - p_fn(qmat, 0, t)[1, 3]
+}, vectorize.args = "t")
+
+# bs for cox model with one covariate
+bs_cox <- Vectorize(function(t, beta_star, theta.t){
+  p11*(S_t(t, x = c(1, 1), theta.t)*(1 - S_t(t, x = c(1, 1), theta.t)) +
+         (S_t(t, x = c(1, 1), theta.t) - coxph_st(t, x.val = 1, beta_star, theta.t))^2) +
+    p10*(S_t(t, x = c(1, 0), theta.t)*(1 - S_t(t, x = c(1, 0), theta.t)) +
+           (S_t(t, x = c(1, 0), theta.t) - coxph_st(t, x.val = 1, beta_star, theta.t))^2) +
+    p01*(S_t(t, x = c(0, 1), theta.t)*(1 - S_t(t, x = c(0, 1), theta.t)) +
+           (S_t(t, x = c(0, 1), theta.t) - coxph_st(t, x.val = 0, beta_star,  theta.t))^2) +
+    p00*(S_t(t, x = c(0, 0), theta.t)*(1 - S_t(t, x = c(0, 0), theta.t)) +
+           (S_t(t, x = c(0, 0), theta.t) - coxph_st(t, x.val = 0, beta_star, theta.t))^2)
+}, vectorize.args = "t")
+
+# bs for true model
+dgamma01.markov <- Vectorize(function(s, theta, beta){
+  # which set of par
+  par1 = theta$par1
+  par2 = theta$par2
+  par3 = theta$par3
+  beta01 <- par1[-1]
+  beta02 <- par2[-1]
+  beta12 <- par3[-1]
+  # baseline
+  l01 = par1[1]
+  l02 = par2[1]
+  l12 = par3[1]
+  qmat11 <- q_fn(theta, x = c(1, 1))
+  qmat10 <- q_fn(theta, x = c(1, 0))
+  qmat01 <- q_fn(theta, x = c(0, 1))
+  qmat00 <- q_fn(theta, x = c(0, 0))
+  
+  r0_s <- p00*l01*exp(-(l01 + l02)* s) +
+    p10*l01*exp(c(1, 0)%*%beta01)*exp(-(l01*exp(c(1, 0)%*%beta01) + l02*exp(c(1, 0)%*%beta02))* s) +
+    p01*l01*exp(c(0, 1)%*%beta01)*exp(-(l01*exp(c(0, 1)%*%beta01) + l02*exp(c(0, 1)%*%beta02))* s) +
+    p11*l01*exp(c(1, 1)%*%beta01)*exp(-(l01*exp(c(1, 1)%*%beta01) + l02*exp(c(1, 1)%*%beta02))* s)
+  r0_s_psi <- p10 *exp(beta)*exp(-(l01*exp(c(1, 0)%*%beta01) + l02*exp(c(1, 0)%*%beta02))* s) +
+    p11 *exp(beta)*exp(-(l01*exp(c(1, 1)%*%beta01) + l02*exp(c(1, 1)%*%beta02))* s) +
+    p00 *exp(-(l01*exp(c(0, 0)%*%beta01) + l02*exp(c(0, 0)%*%beta02))* s) +
+    p01 *exp(-(l01*exp(c(0, 1)%*%beta01) + l02*exp(c(0, 1)%*%beta02))* s)
+  val <- r0_s/r0_s_psi
+  return(val)
+}, vectorize.args = "s")
+
+dgamma02.markov <- Vectorize(function(s, theta, beta){
+  par1 = theta$par1
+  par2 = theta$par2
+  par3 = theta$par3
+  beta01 <- par1[-1]
+  beta02 <- par2[-1]
+  beta12 <- par3[-1]
+  # baseline
+  l01 = par1[1]
+  l02 = par2[1]
+  l12 = par3[1]
+  qmat11 <- q_fn(theta, x = c(1, 1))
+  qmat10 <- q_fn(theta, x = c(1, 0))
+  qmat01 <- q_fn(theta, x = c(0, 1))
+  qmat00 <- q_fn(theta, x = c(0, 0))
+  
+  r0_s <- p00*l02*exp(-(l01 + l02)* s) +
+    p10*l02*exp(c(1, 0)%*%beta02)*exp(-(l01*exp(c(1, 0)%*%beta01) + l02*exp(c(1, 0)%*%beta02))* s) +
+    p01*l02*exp(c(0, 1)%*%beta02)*exp(-(l01*exp(c(0, 1)%*%beta01) + l02*exp(c(0, 1)%*%beta02))* s) +
+    p11*l02*exp(c(1, 1)%*%beta02)*exp(-(l01*exp(c(1, 1)%*%beta01) + l02*exp(c(1, 1)%*%beta02))* s)
+  r0_s_psi <- p10 *exp(beta)*exp(-(l01*exp(c(1, 0)%*%beta01) + l02*exp(c(1, 0)%*%beta02))* s) +
+    p11 *exp(beta)*exp(-(l01*exp(c(1, 1)%*%beta01) + l02*exp(c(1, 1)%*%beta02))* s) +
+    p00 *exp(-(l01*exp(c(0, 0)%*%beta01) + l02*exp(c(0, 0)%*%beta02))* s) +
+    p01 *exp(-(l01*exp(c(0, 1)%*%beta01) + l02*exp(c(0, 1)%*%beta02))* s)
+  val <- r0_s/r0_s_psi
+  return(val)
+}, vectorize.args = "s")
+# dgamma02.s
+
+# dgamma12.s
+dgamma12.markov <- Vectorize(function(s, theta, beta){ # no need for x here
+  par1 = theta$par1
+  par2 = theta$par2
+  par3 = theta$par3
+  beta01 <- par1[-1]
+  beta02 <- par2[-1]
+  beta12 <- par3[-1]
+  # baseline
+  l01 = par1[1]
+  l02 = par2[1]
+  l12 = par3[1]
+  qmat11 <- q_fn(theta, x = c(1, 1))
+  qmat10 <- q_fn(theta, x = c(1, 0))
+  qmat01 <- q_fn(theta, x = c(0, 1))
+  qmat00 <- q_fn(theta, x = c(0, 0))
+  
+  r0_s <-  p11*(l12*exp(beta12%*%c(1, 1))*p_fn(qmat11, 0, s)[1,2]) +
+    p10*(l12*exp(beta12%*%c(1, 0))*p_fn(qmat10, 0, s)[1,2]) +
+    p01*(l12*exp(beta12%*%c(0, 1))*p_fn(qmat01, 0, s)[1,2]) +
+    p00*(l12*exp(beta12%*%c(0, 0))*p_fn(qmat00, 0, s)[1,2]) 
+  
+  r0_s_psi <- p11*exp(beta)*p_fn(qmat11, 0, s)[1,2] + 
+    p10*exp(beta)*p_fn(qmat10, 0, s)[1,2] +
+    p01*p_fn(qmat01, 0, s)[1,2] +
+    p00*p_fn(qmat00, 0, s)[1,2]
+  
+  val <- r0_s/r0_s_psi
+  return(val)
+}, vectorize.args = "s")
+
+bs_insep <- Vectorize(function(t, theta.t){
+  p11*S_t(t, x = c(1, 1), theta.t)*(1 - S_t(t, x = c(1, 1), theta.t)) +
+    p10*S_t(t, x = c(1, 0), theta.t)*(1 - S_t(t, x = c(1, 0), theta.t)) +
+    p01*S_t(t, x = c(0, 1), theta.t)*(1 - S_t(t, x = c(0, 1), theta.t)) +
+    p00*S_t(t, x = c(0, 0), theta.t)*(1 - S_t(t, x = c(0, 0), theta.t)) 
+}, vectorize.args = "t")
+
+bs_markov <- Vectorize(function(t, theta.t, beta_star_markov01, beta_star_markov02, beta_star_markov12){
+  p11*(S_t(t, x = c(1, 1), theta.t)*(1 - S_t(t, x = c(1, 1), theta.t)) +
+         (S_t(t, x = c(1, 1), theta.t) - markov_st(t, x.val = 1, theta = theta.t, beta_star_markov01, beta_star_markov02, beta_star_markov12))^2) +
+    p10*(S_t(t, x = c(1, 0), theta.t)*(1 - S_t(t, x = c(1, 0), theta.t)) +
+           (S_t(t, x = c(1, 0), theta.t) - markov_st(t, x.val = 1, theta = theta.t, beta_star_markov01, beta_star_markov02, beta_star_markov12))^2) +
+    p01*(S_t(t, x = c(0, 1), theta.t)*(1 - S_t(t, x = c(0, 1), theta.t)) +
+           (S_t(t, x = c(0, 1), theta.t) - markov_st(t, x.val = 0, theta = theta.t, beta_star_markov01, beta_star_markov02, beta_star_markov12))^2) +
+    p00*(S_t(t, x = c(0, 0), theta.t)*(1 - S_t(t, x = c(0, 0), theta.t)) +
+           (S_t(t, x = c(0, 0), theta.t) - markov_st(t, x.val = 0, theta = theta.t, beta_star_markov01, beta_star_markov02, beta_star_markov12))^2)
+}, vectorize.args = "t")
+
+markov_st <- Vectorize(function(t, theta, x.val, beta_star_markov01, beta_star_markov02, beta_star_markov12){
+  int1 <- Vectorize(
+    function(u, theta) {
+      dgamma01.markov(u, theta, beta_star_markov01) * exp(x.val %*% beta_star_markov01) + dgamma02.markov(u, theta, beta_star_markov02)*exp(x.val%*%beta_star_markov02)}, vectorize.args = "u")
+  
+  int2 <- Vectorize(function(u){dgamma12.markov(u, theta, beta_star_markov12)*exp(x.val%*%beta_star_markov12)}, vectorize.args = "u")
+  # for P(Z(t) = 0), this is
+  p0 <- exp(-integrate(f = int1, lower = 0, upper = t, theta)$value)
+  # For P(Z(t) = 1), this is
+  int_all <- Vectorize(function(s){
+    exp(-integrate(f = int1, lower = 0, upper = s, theta)$value)*dgamma01.markov(s, theta, beta_star_markov01)*exp(x.val%*%beta_star_markov01)*exp(-integrate(f = int2, lower = s, upper = t)$value)}, vectorize.args = "s")
+  
+  p1 <- integrate(int_all, lower = 0, upper = t)$value
+  return(c(p0+ p1))}, 
+  vectorize.args = "t")
